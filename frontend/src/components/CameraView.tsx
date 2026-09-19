@@ -47,7 +47,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            Live Vision (Cans, Bottles, Phones & Humans)
+            Live Vision (Cans, Phones & Humans)
           </button>
           <button
             onClick={() => setMode('SIMULATION')}
@@ -65,8 +65,6 @@ export const CameraView: React.FC<CameraViewProps> = ({
             <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-900 border border-white/10 text-[11px]">
               <span className="text-slate-400">Detections:</span>
               <span className="text-cyan-400 font-bold">Persons: {frame?.counts?.humans ?? 0}</span>
-              <span className="text-slate-500">•</span>
-              <span className="text-emerald-400 font-bold">Bottles: {frame?.counts?.bottles ?? 0}</span>
               <span className="text-slate-500">•</span>
               <span className="text-amber-400 font-bold">Cans: {frame?.counts?.cans ?? 0}</span>
               <span className="text-slate-500">•</span>
@@ -152,7 +150,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
             {/* Top-Left Live Badge */}
             <div className="absolute top-2 left-2 px-2.5 py-1 rounded bg-slate-950/85 border border-cyan-400/40 text-[10px] font-mono text-cyan-400 flex items-center gap-1.5 shadow-lg backdrop-blur-md">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              LIVE • CANS, BOTTLES, PHONES & HUMANS
+              LIVE • CANS, PHONES & HUMANS
             </div>
 
             {/* Top-Right Active State Badge */}

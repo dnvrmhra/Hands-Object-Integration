@@ -62,7 +62,6 @@ FRAME_PERIOD = 1.0 / TARGET_FPS
 # e.g., ALLOWED_CLASSES = ["person", "sample", "test_tube", "centrifuge", "glovebox"]
 ALLOWED_CLASSES: list[str] = [
     "person",
-    "bottle",
     "can",
     "phone",
 ]
@@ -206,18 +205,14 @@ class HighPerformanceLivePipeline:
         crop: Optional[np.ndarray] = None,
     ) -> tuple[Optional[str], Optional[str]]:
         """
-        Maps detections to canonical categories ('person', 'object') and names ('bottle', 'can', 'phone', 'person').
-        Handles both our dedicated 4-class model:
-          0: bottle, 1: can, 2: phone, 3: person
-        and standard COCO 80-class fallback.
+        Maps detections to canonical categories ('person', 'object') and names ('can', 'phone', 'person').
+        Handles both our dedicated 4-class model and standard COCO 80-class fallback.
         """
         raw_name = names_dict.get(cls_id, "").lower()
 
-        # Dedicated 4-class direct mapping (exact and zero ambiguity)
+        # Dedicated 4-class direct mapping
         if len(names_dict) <= 6:
-            if cls_id == 0 or "bottle" in raw_name:
-                return "object", "bottle"
-            elif cls_id == 1 or "can" in raw_name:
+            if cls_id in (0, 1) or "can" in raw_name or "bottle" in raw_name or "cup" in raw_name:
                 return "object", "can"
             elif cls_id == 2 or "phone" in raw_name:
                 return "object", "phone"
@@ -226,24 +221,24 @@ class HighPerformanceLivePipeline:
 
         # Fallback for standard 80-class COCO:
         # 1. Person: Class 0
-        if "person" in raw_name:
+        if "person" in raw_name or cls_id == 0:
             return "person", "person"
 
-        # 2. Bottle: Class 39
-        if "bottle" in raw_name:
-            return "object", "bottle"
-
-        # 3. Cup / Can: Class 41
-        if "cup" in raw_name or "can" in raw_name:
+        # 2. Soda Can / Beverage Container: Class 41 (cup) & Class 39 (bottle)
+        # Both cup (41) and bottle (39) are mapped directly to 'can' (bottle label removed)
+        if "cup" in raw_name or "can" in raw_name or "bottle" in raw_name or cls_id in (39, 41):
             return "object", "can"
 
-        # 4. Smartphone: Class 67
-        if "phone" in raw_name or "cell" in raw_name:
+        # 3. Smartphone: Class 67 (cell phone)
+        if "phone" in raw_name or "cell" in raw_name or cls_id == 67:
+            # If COCO misclassifies a soda can / metallic container as a cell phone, check aspect ratio.
+            # Soda cans held upright/tilted have 0.75 <= AR <= 1.38 (squat/can-like).
+            h = bbox.get("h", 1.0)
+            w = bbox.get("w", 1.0)
+            ar = h / max(1.0, w)
+            if 0.75 <= ar <= 1.38:
+                return "object", "can"
             return "object", "phone"
-
-        # 5. Wine glass (40) and Vase (75) — do NOT remap these to bottle/can.
-        # They are a major source of false positives from room textures.
-        # Simply reject them.
 
         return None, None
 
@@ -432,15 +427,6 @@ class HighPerformanceLivePipeline:
                                     if conf < min_c:
                                         continue
 
-                                elif canonical_name == "bottle":
-                                    # Metallic thermos bottles / bottles (aspect ratio 0.35 - 4.50)
-                                    if not (0.35 <= ar <= 4.50):
-                                        continue
-                                    if w_box < 15 or h_box < 20:
-                                        continue
-                                    if conf < min_c:
-                                        continue
-
                                 elif canonical_name == "phone":
                                     # Smartphones / cell phones (aspect ratio 0.30 - 3.50)
                                     if not (0.30 <= ar <= 3.50):
@@ -612,7 +598,6 @@ class HighPerformanceLivePipeline:
                             "human_state": active_human_state,
                             "allowed_objects": allowed_obj_counts,
                             "total_allowed": num_humans + len(current_boxes),
-                            "bottles": allowed_obj_counts.get("bottle", 0),
                             "cans": allowed_obj_counts.get("can", 0),
                             "phones": allowed_obj_counts.get("phone", 0),
                         },

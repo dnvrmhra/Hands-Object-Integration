@@ -66,7 +66,6 @@ mlruns/
 lightning_logs/
 
 # Heavy Model Weights & Binaries (untrack large weights, keep trackable if tracked via LFS)
-*.pt
 *.pth
 *.onnx
 *.engine

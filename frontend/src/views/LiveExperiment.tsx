@@ -67,7 +67,7 @@ export const LiveExperiment: React.FC<LiveExperimentProps> = ({
           </div>
           <div>
             <div className="text-xs font-mono font-bold text-slate-200 flex items-center gap-2">
-              LIVE VISION DECK • CANS, BOTTLES, PHONES & HUMANS
+              LIVE VISION DECK • CANS, PHONES & HUMANS
               <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-400/30 flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                 LIVE WEBCAM ACTIVE
@@ -89,7 +89,7 @@ export const LiveExperiment: React.FC<LiveExperimentProps> = ({
                   GRASPED {movement?.active_object} • READY FOR TRANSPORT
                 </span>
               ) : (
-                `Bottles: ${frame?.counts?.bottles ?? 0} | Cans: ${frame?.counts?.cans ?? 0} | Phones: ${frame?.counts?.phones ?? 0} • Persons: ${frame?.counts?.humans ?? 0} (${frame?.counts?.human_state ?? 'IDLE'})`
+                `Cans: ${frame?.counts?.cans ?? 0} | Phones: ${frame?.counts?.phones ?? 0} • Persons: ${frame?.counts?.humans ?? 0} (${frame?.counts?.human_state ?? 'IDLE'})`
               )}
             </div>
           </div>
