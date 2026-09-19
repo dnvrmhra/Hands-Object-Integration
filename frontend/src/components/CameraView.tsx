@@ -47,7 +47,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            Live Vision (Bottles, Cans, Phones & Humans)
+            Live Vision (Cans, Bottles, Phones & Humans)
           </button>
           <button
             onClick={() => setMode('SIMULATION')}
@@ -61,14 +61,16 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
         {mode === 'LIVE_WEBCAM' && (
           <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
-            {/* Object Counts */}
+            {/* Detection Counts */}
             <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-900 border border-white/10 text-[11px]">
-              <span className="text-slate-400">Objects:</span>
-              <span className="text-cyan-400 font-bold">B:{frame?.counts?.bottles ?? 0}</span>
+              <span className="text-slate-400">Detections:</span>
+              <span className="text-cyan-400 font-bold">Persons: {frame?.counts?.humans ?? 0}</span>
               <span className="text-slate-500">•</span>
-              <span className="text-emerald-400 font-bold">C:{frame?.counts?.cans ?? 0}</span>
+              <span className="text-emerald-400 font-bold">Bottles: {frame?.counts?.bottles ?? 0}</span>
               <span className="text-slate-500">•</span>
-              <span className="text-amber-400 font-bold">P:{frame?.counts?.phones ?? 0}</span>
+              <span className="text-amber-400 font-bold">Cans: {frame?.counts?.cans ?? 0}</span>
+              <span className="text-slate-500">•</span>
+              <span className="text-sky-400 font-bold">Phones: {frame?.counts?.phones ?? 0}</span>
             </div>
 
             {/* Human Activity State Badge */}
@@ -117,7 +119,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
                 key={retryKey}
                 src="http://localhost:8000/video_feed"
                 alt="ASTRA Live Feed"
-                className="w-full h-full object-cover"
+                className="w-full h-full object-contain"
                 onError={() => setStreamError(true)}
                 onLoad={() => setStreamError(false)}
               />
@@ -130,7 +132,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
                   VISION SERVER CONNECTING...
                 </div>
                 <p className="text-xs text-slate-400 max-w-sm">
-                  Live vision server streaming webcam with can/bottle/phone/human tracking:
+                  Live vision server streaming webcam with person and custom object detection:
                 </p>
                 <code className="text-[11px] font-mono bg-slate-900 px-3 py-1.5 rounded border border-white/10 text-cyan-400">
                   python -m uvicorn inference.inference_server:app --port 8000
@@ -150,7 +152,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
             {/* Top-Left Live Badge */}
             <div className="absolute top-2 left-2 px-2.5 py-1 rounded bg-slate-950/85 border border-cyan-400/40 text-[10px] font-mono text-cyan-400 flex items-center gap-1.5 shadow-lg backdrop-blur-md">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              LIVE • BOTTLES, CANS, PHONES & HUMANS
+              LIVE • CANS, BOTTLES, PHONES & HUMANS
             </div>
 
             {/* Top-Right Active State Badge */}

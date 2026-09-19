@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 # Target object classes to track for movement
-CAN_BOTTLE_CLASSES = {"bottle", "can", "cup", "container", "box"}
+CAN_BOTTLE_CLASSES = {"bottle", "can", "cup", "container", "box", "phone", "cell phone"}
 
 
 class CanBottleMovementTracker:

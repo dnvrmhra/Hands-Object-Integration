@@ -522,7 +522,10 @@ def draw_hoi_overlays(
     # 2. Draw Smooth YOLO Bounding Boxes
     for det in detections:
         bbox = det["bbox"]
-        x1, y1, x2, y2 = int(bbox["x1"]), int(bbox["y1"]), int(bbox["x2"]), int(bbox["y2"])
+        x1 = max(0, min(w - 1, int(bbox["x1"])))
+        y1 = max(0, min(h - 1, int(bbox["y1"])))
+        x2 = max(0, min(w - 1, int(bbox["x2"])))
+        y2 = max(0, min(h - 1, int(bbox["y2"])))
         cls_name = det["class_name"].lower()
         conf = det["confidence"]
         is_held = det.get("is_hand_locked", False)
@@ -542,7 +545,7 @@ def draw_hoi_overlays(
         cv2.rectangle(vis, (x1, y1), (x2, y2), color, thickness, cv2.LINE_AA)
 
         # High-Tech Corner Accents
-        corner_len = min(15, (x2 - x1) // 4, (y2 - y1) // 4)
+        corner_len = min(15, max(2, (x2 - x1) // 4), max(2, (y2 - y1) // 4))
         cv2.line(vis, (x1, y1), (x1 + corner_len, y1), color, 3, cv2.LINE_AA)
         cv2.line(vis, (x1, y1), (x1, y1 + corner_len), color, 3, cv2.LINE_AA)
         cv2.line(vis, (x2, y2), (x2 - corner_len, y2), color, 3, cv2.LINE_AA)
@@ -551,9 +554,12 @@ def draw_hoi_overlays(
         held_tag = " [HELD]" if is_held else ""
         label = f"{cls_name.upper()} {int(conf * 100)}%{held_tag}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
-        cv2.rectangle(vis, (x1, max(0, y1 - 22)), (x1 + tw + 10, y1), (15, 23, 42), -1)
-        cv2.rectangle(vis, (x1, max(0, y1 - 22)), (x1 + tw + 10, y1), color, 1)
-        cv2.putText(vis, label, (x1 + 5, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 1, cv2.LINE_AA)
+        badge_y1 = max(0, y1 - 22)
+        badge_y2 = y1 if y1 >= 22 else min(h - 1, y1 + 22)
+        cv2.rectangle(vis, (x1, badge_y1), (min(w - 1, x1 + tw + 10), badge_y2), (15, 23, 42), -1)
+        cv2.rectangle(vis, (x1, badge_y1), (min(w - 1, x1 + tw + 10), badge_y2), color, 1)
+        text_y = y1 - 6 if y1 >= 22 else y1 + 16
+        cv2.putText(vis, label, (x1 + 5, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 1, cv2.LINE_AA)
 
     # 3. Draw Proximity Line
     if hands and detections and hoi.get("state") in ("REACHING", "GRASPING", "TRANSPORTING"):

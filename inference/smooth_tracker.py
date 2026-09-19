@@ -100,7 +100,7 @@ class SmoothBoxTracker:
         self,
         alpha_coord: float = 0.65,
         max_missing_frames: int = 12,
-        min_hits_to_show: int = 1,
+        min_hits_to_show: int = 2,
         max_tracks: int = 6,
     ):
         self.alpha_coord = alpha_coord
@@ -127,11 +127,14 @@ class SmoothBoxTracker:
                 ab_tuple = (ab["x1"], ab["y1"], ab["x2"], ab["y2"])
                 same_cls = (d["class_name"] == accepted["class_name"])
                 # Discard duplicate overlapping boxes
-                iou_thresh = 0.20 if same_cls else 0.40
+                # If same class, merge IoU > 0.45 or centroid distance < 35px
+                # If different class, suppress lower-confidence candidate if IoU > 0.50 or centroid distance < 25px
+                iou_thresh = 0.45 if same_cls else 0.50
+                dist_thresh = 35 if same_cls else 25
                 if compute_iou(box_tuple, ab_tuple) > iou_thresh:
                     overlap = True
                     break
-                if same_cls and math.hypot(b["cx"] - ab["cx"], b["cy"] - ab["cy"]) < 60:
+                if math.hypot(b["cx"] - ab["cx"], b["cy"] - ab["cy"]) < dist_thresh:
                     overlap = True
                     break
             if not overlap:
@@ -166,8 +169,8 @@ class SmoothBoxTracker:
                 iou = compute_iou(trk_box, b_box)
                 dist = math.hypot(trk.cx - b["cx"], trk.cy - b["cy"])
 
-                if iou > 0.20 or dist < 70:
-                    score = iou + (1.0 - min(dist, 70) / 70.0)
+                if iou > 0.15 or dist < 80:
+                    score = iou + (1.0 - min(dist, 80) / 80.0)
                     if score > best_iou:
                         best_iou = score
                         best_idx = i
@@ -245,7 +248,7 @@ class SmoothBoxTracker:
                 t2 = active_tracks[j]
                 b1 = (t1.box[0], t1.box[1], t1.box[2], t1.box[3])
                 b2 = (t2.box[0], t2.box[1], t2.box[2], t2.box[3])
-                if compute_iou(b1, b2) > 0.20 or math.hypot(t1.cx - t2.cx, t1.cy - t2.cy) < 60:
+                if compute_iou(b1, b2) > 0.45 or math.hypot(t1.cx - t2.cx, t1.cy - t2.cy) < 35:
                     # Remove the one with fewer hits or lower confidence
                     if t1.hit_count >= t2.hit_count:
                         to_delete.add(t2.track_id)

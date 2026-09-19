@@ -62,10 +62,13 @@ FRAME_PERIOD = 1.0 / TARGET_FPS
 # e.g., ALLOWED_CLASSES = ["person", "sample", "test_tube", "centrifuge", "glovebox"]
 ALLOWED_CLASSES: list[str] = [
     "person",
+    "bottle",
+    "can",
+    "phone",
 ]
 
 # Configurable confidence threshold (applied to all allowed classes)
-CONFIDENCE_THRESHOLD: float = 0.50
+CONFIDENCE_THRESHOLD: float = 0.55
 
 app = FastAPI(
     title="ASTRA-HAR Smooth Vision Server",
@@ -102,9 +105,9 @@ class HighPerformanceLivePipeline:
         self.hoi_engine: Optional[HOIFusionEngine] = None
         self.smooth_tracker = SmoothBoxTracker(
             alpha_coord=0.65,
-            max_missing_frames=12,
-            min_hits_to_show=1,
-            max_tracks=6,
+            max_missing_frames=8,
+            min_hits_to_show=2,
+            max_tracks=8,
         )
         self.human_state_tracker = HumanStateTracker(
             max_missing_frames=8,
@@ -152,22 +155,12 @@ class HighPerformanceLivePipeline:
     def load_models(self) -> None:
         from ultralytics import YOLO
 
-        v2_weights = ROOT_DIR / "runs" / "train" / "multilight_v2" / "weights" / "best.pt"
-        fallback_v1 = ROOT_DIR / "multilight_best.pt"
+        # IMPORTANT: Always use base COCO yolov8n.pt (trained on millions of real-world
+        # images). The synthetic multilight_v2 model hallucinates bottles/cans from room
+        # textures because it was trained on procedural synthetic data.
         base_p = ROOT_DIR / "yolov8n.pt"
-
-        if v2_weights.exists():
-            model_path = str(v2_weights)
-            model_type = "Multi-Lighting Photorealistic YOLOv8n (Dedicated 4-class)"
-        elif fallback_v1.exists():
-            model_path = str(fallback_v1)
-            model_type = "Multi-Lighting v1 YOLOv8n"
-        elif base_p.exists():
-            model_path = str(base_p)
-            model_type = "Base YOLOv8n"
-        else:
-            model_path = "yolov8n.pt"
-            model_type = "YOLOv8n"
+        model_path = str(base_p) if base_p.exists() else "yolov8n.pt"
+        model_type = "Base COCO YOLOv8n (Real-World)"
 
         try:
             self.coco_model = YOLO(model_path)
@@ -246,28 +239,11 @@ class HighPerformanceLivePipeline:
 
         # 4. Smartphone: Class 67
         if "phone" in raw_name or "cell" in raw_name:
-            if crop is not None and crop.size > 0:
-                try:
-                    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-                    sat = float(np.mean(hsv[:, :, 1]))
-                    w = max(1.0, bbox["w"])
-                    h = max(1.0, bbox["h"])
-                    ar = h / w
-                    if sat > 55.0 and (1.30 <= ar <= 1.95):
-                        return "object", "can"
-                except Exception:
-                    pass
             return "object", "phone"
 
-        # 5. Wine glass (40) or Vase (75)
-        if "wine glass" in raw_name or "vase" in raw_name:
-            w = max(1.0, bbox["w"])
-            h = max(1.0, bbox["h"])
-            ar = h / w
-            if ar >= 2.10:
-                return "object", "bottle"
-            else:
-                return "object", "can"
+        # 5. Wine glass (40) and Vase (75) — do NOT remap these to bottle/can.
+        # They are a major source of false positives from room textures.
+        # Simply reject them.
 
         return None, None
 
@@ -375,13 +351,13 @@ class HighPerformanceLivePipeline:
                     if len(names) <= 6:
                         target_ids = list(range(len(names)))
                     else:
-                        # 0: person, 39: bottle, 40: wine glass, 41: cup, 67: cell phone, 75: vase
-                        target_ids = [0, 39, 40, 41, 67, 75]
+                        # 0: person, 39: bottle, 41: cup (can), 67: cell phone
+                        target_ids = [0, 39, 41, 67]
 
                     res = self.coco_model.predict(
                         enhanced_frame,
                         imgsz=480,
-                        conf=0.18,
+                        conf=0.25,
                         iou=0.45,
                         classes=target_ids,
                         verbose=False,
@@ -417,17 +393,70 @@ class HighPerformanceLivePipeline:
                                     continue
 
                                 # 1. Strict Class Allowlist Check:
-                                # Generic COCO classes (bottle, can, phone, cup, etc.) are strictly discarded unless explicitly allowed.
-                                # Default allowlist contains only 'person' until custom ASTRA-HAR classes are trained and provided.
                                 if canonical_name.lower() not in [c.lower() for c in ALLOWED_CLASSES]:
                                     continue
 
-                                # 2. Configurable Confidence Threshold Check
-                                if conf < CONFIDENCE_THRESHOLD:
+                                # 2. Physical geometry & edge boundary checks to eliminate false room detections
+                                frame_w, frame_h = frame.shape[1], frame.shape[0]
+                                ar = h_box / w_box
+
+                                # Reject extreme edge slivers (objects cut off on the boundary)
+                                if (x1 <= 2 or x2 >= frame_w - 2) and w_box < 25:
+                                    continue
+                                if (y1 <= 2 or y2 >= frame_h - 2) and h_box < 25:
                                     continue
 
+                                # Hand-aware proximity check for adaptive sensitivity
+                                is_near_hand = False
+                                if hands:
+                                    for h_item in hands:
+                                        p = h_item.get("palm_px", (0, 0))
+                                        dx = max(0.0, x1 - p[0], p[0] - x2)
+                                        dy = max(0.0, y1 - p[1], p[1] - y2)
+                                        if math.hypot(dx, dy) < 100:
+                                            is_near_hand = True
+                                            break
+
+                                # Minimum pixel area guard — allow smaller objects (cans/phones at distance)
+                                if w_box * h_box < 250:
+                                    continue
+
+                                min_c = 0.25 if is_near_hand else 0.30
+
+                                if canonical_name == "can":
+                                    # Metal soda cans (aspect ratio 0.35 - 3.00)
+                                    if not (0.35 <= ar <= 3.00):
+                                        continue
+                                    if w_box < 15 or h_box < 15:
+                                        continue
+                                    if conf < min_c:
+                                        continue
+
+                                elif canonical_name == "bottle":
+                                    # Metallic thermos bottles / bottles (aspect ratio 0.35 - 4.50)
+                                    if not (0.35 <= ar <= 4.50):
+                                        continue
+                                    if w_box < 15 or h_box < 20:
+                                        continue
+                                    if conf < min_c:
+                                        continue
+
+                                elif canonical_name == "phone":
+                                    # Smartphones / cell phones (aspect ratio 0.30 - 3.50)
+                                    if not (0.30 <= ar <= 3.50):
+                                        continue
+                                    if w_box < 15 or h_box < 15:
+                                        continue
+                                    if conf < min_c:
+                                        continue
+
+                                elif canonical_name == "person":
+                                    if w_box < 45 or h_box < 70:
+                                        continue
+                                    if conf < 0.40:
+                                        continue
+
                                 # 3. Ensure bounding coordinates are clamped precisely to frame boundaries
-                                frame_w, frame_h = frame.shape[1], frame.shape[0]
                                 x1_cl = max(0.0, min(float(frame_w), x1))
                                 y1_cl = max(0.0, min(float(frame_h), y1))
                                 x2_cl = max(0.0, min(float(frame_w), x2))
