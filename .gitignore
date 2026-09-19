@@ -1,0 +1,124 @@
+# ==============================================================================
+# Git Ignore for ASTRA-HAR YOLO Vision & React/TypeScript Project
+# ==============================================================================
+
+# --- Python & Virtual Environments ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Environments
+venv/
+.venv/
+env/
+.env
+ENV/
+env.bak/
+venv.bak/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+
+# --- Frontend (Node / Vite / React) ---
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+*.tsbuildinfo
+.npm/
+.eslintcache
+
+# Local Environment Configs
+.env.local
+.env.*.local
+
+# --- Machine Learning: Ultralytics YOLO & PyTorch ---
+# Runs, training checkpoints, evaluation batches, tensorboard
+runs/
+wandb/
+mlruns/
+lightning_logs/
+
+# Heavy Model Weights & Binaries (untrack large weights, keep trackable if tracked via LFS)
+*.pt
+*.pth
+*.onnx
+*.engine
+*.tflite
+*.bin
+*.weights
+*.pkl
+*.zip
+*.tar.gz
+
+# MediaPipe Task Binaries (uncomment if downloading dynamically)
+# models/*.task
+
+# --- Datasets & Synthetic Images ---
+# Exclude heavy synthetic datasets and raw image folders
+synthetic_data/dataset/
+synthetic_data/dataset_multilight/
+synthetic_data/dataset_multilight_v2/
+datasets/
+unified_dataset/
+ASTRA_YOLO_PILOT/
+
+# Test Prediction Output Artifacts
+sample_prediction.jpg
+sample_test_image.jpg
+val_batch_predictions.jpg
+bus.jpg
+
+# --- Video Streams & Media Outputs ---
+runs/uploads/
+runs/processed_videos/
+*.mp4
+*.avi
+*.mov
+# Preserve the frontend showcase demo video
+!frontend/public/showcase_yolov8.mp4
+
+# --- Operating System & Editor Files ---
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+
+# Antigravity Agent logs and scratch files
+.gemini/
+.system_generated/
+scratch/
