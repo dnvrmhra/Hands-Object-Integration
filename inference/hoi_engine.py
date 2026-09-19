@@ -531,13 +531,13 @@ def draw_hoi_overlays(
         is_held = det.get("is_hand_locked", False)
 
         if "bottle" in cls_name:
-            color = (52, 211, 153)  # Bright Emerald
+            color = (80, 220, 50)   # Vivid Emerald Green (BGR)
         elif "can" in cls_name:
-            color = (248, 189, 56)  # Electric Amber
+            color = (50, 180, 255)  # Electric Amber/Orange (BGR)
         elif "phone" in cls_name:
-            color = (56, 189, 248)  # Electric Cyan
+            color = (255, 220, 50)  # Electric Cyan (BGR)
         elif "box" in cls_name:
-            color = (254, 180, 216)  # Neon purple
+            color = (254, 180, 216) # Neon purple
         else:
             color = (244, 63, 94)
 

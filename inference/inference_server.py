@@ -40,7 +40,7 @@ from fastapi.staticfiles import StaticFiles
 from inference.hoi_engine import HOIFusionEngine, draw_hoi_overlays
 from inference.human_state_tracker import HumanStateTracker
 from inference.movement_tracker import CanBottleMovementTracker
-from inference.smooth_tracker import SmoothBoxTracker
+from inference.smooth_tracker import SmoothBoxTracker, is_box_on_hand
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 PROCESSED_DIR = ROOT_DIR / "runs" / "processed_videos"
@@ -62,12 +62,14 @@ FRAME_PERIOD = 1.0 / TARGET_FPS
 # e.g., ALLOWED_CLASSES = ["person", "sample", "test_tube", "centrifuge", "glovebox"]
 ALLOWED_CLASSES: list[str] = [
     "person",
+    "bottle",
     "can",
     "phone",
 ]
 
 # Configurable confidence threshold (applied to all allowed classes)
-CONFIDENCE_THRESHOLD: float = 0.55
+CONFIDENCE_THRESHOLD: float = 0.25
+
 
 app = FastAPI(
     title="ASTRA-HAR Smooth Vision Server",
@@ -203,44 +205,101 @@ class HighPerformanceLivePipeline:
         names_dict: dict[int, str],
         bbox: dict[str, float],
         crop: Optional[np.ndarray] = None,
-    ) -> tuple[Optional[str], Optional[str]]:
+    ) -> tuple[Optional[str], Optional[str], float]:
         """
-        Maps detections to canonical categories ('person', 'object') and names ('can', 'phone', 'person').
-        Handles both our dedicated 4-class model and standard COCO 80-class fallback.
+        Rock-solid, aggressive physical feature discriminator between:
+          1. CAN (purple/red/vibrant graphics, silver top)
+          2. BOTTLE (light/matte grey water bottle, translucent container, cap/neck)
+          3. PHONE (jet black rectangular slab, dark, low chroma)
+          4. PERSON
         """
         raw_name = names_dict.get(cls_id, "").lower()
 
         # Dedicated 4-class direct mapping
         if len(names_dict) <= 6:
-            if cls_id in (0, 1) or "can" in raw_name or "bottle" in raw_name or "cup" in raw_name:
-                return "object", "can"
+            if cls_id == 0 or "bottle" in raw_name:
+                return "object", "bottle", 0.95
+            elif cls_id == 1 or "can" in raw_name:
+                return "object", "can", 0.95
             elif cls_id == 2 or "phone" in raw_name:
-                return "object", "phone"
+                return "object", "phone", 0.95
             elif cls_id == 3 or "person" in raw_name:
-                return "person", "person"
+                return "person", "person", 0.95
 
-        # Fallback for standard 80-class COCO:
         # 1. Person: Class 0
         if "person" in raw_name or cls_id == 0:
-            return "person", "person"
+            return "person", "person", 0.95
 
-        # 2. Soda Can / Beverage Container: Class 41 (cup) & Class 39 (bottle)
-        # Both cup (41) and bottle (39) are mapped directly to 'can' (bottle label removed)
-        if "cup" in raw_name or "can" in raw_name or "bottle" in raw_name or cls_id in (39, 41):
-            return "object", "can"
+        w = max(1.0, bbox["w"])
+        h = max(1.0, bbox["h"])
+        ar = h / w
 
-        # 3. Smartphone: Class 67 (cell phone)
-        if "phone" in raw_name or "cell" in raw_name or cls_id == 67:
-            # If COCO misclassifies a soda can / metallic container as a cell phone, check aspect ratio.
-            # Soda cans held upright/tilted have 0.75 <= AR <= 1.38 (squat/can-like).
-            h = bbox.get("h", 1.0)
-            w = bbox.get("w", 1.0)
-            ar = h / max(1.0, w)
-            if 0.75 <= ar <= 1.38:
-                return "object", "can"
-            return "object", "phone"
+        # Fallback if crop is unavailable
+        if crop is None or crop.size == 0:
+            if "bottle" in raw_name or "vase" in raw_name or "wine" in raw_name:
+                return "object", "bottle", 0.80
+            elif "cup" in raw_name or "can" in raw_name:
+                return "object", "can", 0.80
+            return "object", "phone", 0.80
 
-        return None, None
+        try:
+            h_c, w_c = crop.shape[:2]
+
+            # Extract inner object core (excludes lower hand grip and background banner margins)
+            core = crop[int(h_c * 0.08):int(h_c * 0.68), int(w_c * 0.18):int(w_c * 0.82)]
+            if core.size == 0:
+                core = crop
+
+            gray = cv2.cvtColor(core, cv2.COLOR_BGR2GRAY)
+            hsv = cv2.cvtColor(core, cv2.COLOR_BGR2HSV)
+
+            b_ch, g_ch, r_ch = cv2.split(core)
+            diff = np.maximum(
+                np.abs(r_ch.astype(int) - g_ch.astype(int)),
+                np.maximum(np.abs(g_ch.astype(int) - b_ch.astype(int)), np.abs(b_ch.astype(int) - r_ch.astype(int))),
+            )
+
+            # 1. Purple/violet branding (user's energy drink can): H in [115, 165], S >= 40, V >= 50
+            purple = float(np.mean((hsv[:, :, 0] >= 115) & (hsv[:, :, 0] <= 165) & (hsv[:, :, 1] >= 40) & (hsv[:, :, 2] >= 50)))
+            # 2. Silver metallic pull-tab top / can rim: V >= 155, S <= 45
+            silver = float(np.mean((hsv[:, :, 2] >= 155) & (hsv[:, :, 1] <= 45)))
+            # 3. Dark black pixels: V < 75
+            black = float(np.mean(gray < 75))
+            # 4. Mean luminance
+            mean_v = float(np.mean(gray))
+            # 5. Median chroma / colorfulness
+            med_chr = float(np.median(diff))
+            # 6. Red branding (Coke can, etc.)
+            red = float(np.mean(((hsv[:, :, 0] <= 10) | (hsv[:, :, 0] >= 170)) & (hsv[:, :, 1] >= 60) & (hsv[:, :, 2] >= 60)))
+
+            # ── DECISION 1: BEVERAGE CAN ──
+            # Purple energy drink can graphics, red can graphics, or silver pull-tab top with purple body
+            if (purple >= 0.18 and med_chr >= 28) or red >= 0.18 or (silver >= 0.18 and purple >= 0.14) or (purple >= 0.25):
+                return "object", "can", 0.92
+
+            # ── DECISION 2: WATER BOTTLE ──
+            # The grey water bottle is matte grey (MeanV >= 118, Black < 0.20, NO purple) or tall container with bottle prior
+            if (mean_v >= 118 and black < 0.20 and purple < 0.08) or ("bottle" in raw_name and purple < 0.12 and black < 0.25):
+                return "object", "bottle", 0.90
+
+            # ── DECISION 3: SMARTPHONE ──
+            # Flat jet black rectangle (Black >= 0.28, low luminance MeanV < 112, NO purple can graphics)
+            if black >= 0.28 or mean_v < 112 or "phone" in raw_name or "cell" in raw_name or "remote" in raw_name:
+                return "object", "phone", 0.93
+
+            # Fallback based on raw detection
+            if "bottle" in raw_name:
+                return "object", "bottle", 0.75
+            elif "cup" in raw_name or "can" in raw_name:
+                return "object", "can", 0.75
+            return "object", "phone", 0.75
+
+        except Exception:
+            if "bottle" in raw_name:
+                return "object", "bottle", 0.70
+            elif "cup" in raw_name:
+                return "object", "can", 0.70
+            return "object", "phone", 0.70
 
     def start(self) -> None:
         if self.running:
@@ -260,27 +319,51 @@ class HighPerformanceLivePipeline:
         self.render_thread = threading.Thread(target=self._render_stream_loop, daemon=True)
         self.render_thread.start()
 
-    def _init_camera(self) -> None:
+    def _init_camera(self, force_source: Optional[str] = None) -> None:
         if self.cap is not None:
-            self.cap.release()
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
 
-        print("[CAMERA] Opening physical webcam (DirectShow)...")
-        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY)
-        if cap.isOpened():
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, 30)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            ret, test_frame = cap.read()
-            if ret and test_frame is not None:
-                self.cap = cap
-                self.camera_source_name = "PHYSICAL_WEBCAM_0"
-                print("[CAMERA] Physical webcam connected with single-frame buffer!")
+        if force_source == "video":
+            if SHOWCASE_VIDEO.exists():
+                print(f"[CAMERA] Using showcase video: {SHOWCASE_VIDEO}")
+                self.cap = cv2.VideoCapture(str(SHOWCASE_VIDEO))
+                self.camera_source_name = "FALLBACK_SHOWCASE_VIDEO"
                 return
+
+        print("[CAMERA] Probing laptop webcam (DirectShow / MSMF)...")
+        apis = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY] if os.name == "nt" else [cv2.CAP_ANY]
+
+        # Probe camera index 0 first (default laptop integrated camera), then 1 (external webcam)
+        for cam_idx in (0, 1):
+            for api in apis:
+                try:
+                    cap = cv2.VideoCapture(cam_idx, api)
+                    if cap.isOpened():
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                        cap.set(cv2.CAP_PROP_FPS, 30)
+                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+                        # Warm-up read (allow physical camera sensor AGC/AEC to initialize)
+                        for _ in range(6):
+                            ret, test_frame = cap.read()
+                            if ret and test_frame is not None and test_frame.size > 0:
+                                self.cap = cap
+                                self.camera_source_name = f"PHYSICAL_WEBCAM_{cam_idx}"
+                                print(f"[CAMERA] Physical webcam #{cam_idx} connected via API {api}!")
+                                return
+                            time.sleep(0.04)
+                        cap.release()
+                except Exception as e:
+                    print(f"[CAMERA] Camera index {cam_idx} API {api} error: {e}")
 
         # Fallback to showcase video
         if SHOWCASE_VIDEO.exists():
-            print(f"[CAMERA] Using fallback showcase video: {SHOWCASE_VIDEO}")
+            print(f"[CAMERA] Physical webcam unavailable. Using fallback video: {SHOWCASE_VIDEO}")
             self.cap = cv2.VideoCapture(str(SHOWCASE_VIDEO))
             self.camera_source_name = "FALLBACK_SHOWCASE_VIDEO"
         else:
@@ -346,8 +429,8 @@ class HighPerformanceLivePipeline:
                     if len(names) <= 6:
                         target_ids = list(range(len(names)))
                     else:
-                        # 0: person, 39: bottle, 41: cup (can), 67: cell phone
-                        target_ids = [0, 39, 41, 67]
+                        # 0: person, 39: bottle, 40: wine glass, 41: cup, 65: remote, 67: cell phone, 75: vase
+                        target_ids = [0, 39, 40, 41, 65, 67, 75]
 
                     res = self.coco_model.predict(
                         enhanced_frame,
@@ -363,6 +446,8 @@ class HighPerformanceLivePipeline:
                             for b in r.boxes:
                                 cid = int(b.cls[0])
                                 conf = float(b.conf[0])
+                                raw_name = names.get(cid, "unknown")
+                                print(f"[YOLO-RAW] cid={cid}, name={raw_name}, conf={conf:.2f}")
                                 x1, y1, x2, y2 = (float(v) for v in b.xyxy[0])
                                 w_box = max(1.0, x2 - x1)
                                 h_box = max(1.0, y2 - y1)
@@ -383,7 +468,7 @@ class HighPerformanceLivePipeline:
                                     "h": round(h_box, 1),
                                 }
 
-                                category, canonical_name = self._map_detection(cid, names, bbox_dict, crop)
+                                category, canonical_name, mapped_conf = self._map_detection(cid, names, bbox_dict, crop)
                                 if category is None or canonical_name is None:
                                     continue
 
@@ -399,6 +484,11 @@ class HighPerformanceLivePipeline:
                                 if (x1 <= 2 or x2 >= frame_w - 2) and w_box < 25:
                                     continue
                                 if (y1 <= 2 or y2 >= frame_h - 2) and h_box < 25:
+                                    continue
+
+                                # Configurable Confidence Threshold Check
+                                effective_conf = max(conf, mapped_conf)
+                                if effective_conf < CONFIDENCE_THRESHOLD:
                                     continue
 
                                 # Hand-aware proximity check for adaptive sensitivity
@@ -465,13 +555,17 @@ class HighPerformanceLivePipeline:
                                 det_dict = {
                                     "class_id": cid,
                                     "class_name": canonical_name,
-                                    "confidence": round(conf, 2),
+                                    "confidence": round(effective_conf, 2),
                                     "bbox": clamped_bbox,
                                 }
 
                                 if category == "person":
                                     raw_persons.append(det_dict)
                                 else:
+                                    # Strict HOI constraint: Only accept object (bottle/can/phone) if touching or held by an active hand!
+                                    b_coords = (clamped_bbox["x1"], clamped_bbox["y1"], clamped_bbox["x2"], clamped_bbox["y2"])
+                                    if not is_box_on_hand(b_coords, hands, max_dist=75.0):
+                                        continue
                                     raw_objects.append(det_dict)
 
                 except Exception as err:
@@ -513,6 +607,18 @@ class HighPerformanceLivePipeline:
             with self.state_lock:
                 self.latest_hands = hands_data
                 current_boxes = self.smooth_tracker.get_current_boxes(hands_data)
+                # Extra strict safeguard: if no hands in frame or box not on hand, filter it out immediately
+                if not hands_data:
+                    current_boxes = []
+                else:
+                    current_boxes = [
+                        b for b in current_boxes
+                        if is_box_on_hand(
+                            (b["bbox"]["x1"], b["bbox"]["y1"], b["bbox"]["x2"], b["bbox"]["y2"]),
+                            hands_data,
+                            max_dist=75.0,
+                        )
+                    ]
                 current_humans = self.human_state_tracker.get_current_humans()
 
             # 2. Update HOI State & Movement Engine
@@ -647,6 +753,17 @@ def health() -> dict[str, Any]:
         "adaptive_lighting": True,
         "decoupled_architecture": True,
         "zero_delay_flushing": True,
+    }
+
+
+@app.post("/api/camera/reconnect")
+def reconnect_camera(source: Optional[str] = None) -> dict[str, Any]:
+    """Reconnect or switch between laptop webcam and showcase video."""
+    with pipeline.cam_lock:
+        pipeline._init_camera(force_source=source)
+    return {
+        "status": "ok",
+        "camera_source": pipeline.camera_source_name,
     }
 
 

@@ -33,11 +33,57 @@ def compute_iou(box1: tuple[float, float, float, float], box2: tuple[float, floa
     return inter / union if union > 0 else 0.0
 
 
+def is_box_on_hand(
+    box: tuple[float, float, float, float] | list[float],
+    hands_data: Optional[list[dict[str, Any]]],
+    max_dist: float = 75.0,
+    pad: float = 40.0,
+) -> bool:
+    """
+    Validates whether an object bounding box is directly touching, overlapping,
+    or held by any active hand. Strictly eliminates false positive background boxes.
+    """
+    if not hands_data:
+        return False
+
+    bx1, by1, bx2, by2 = box[0], box[1], box[2], box[3]
+    padded_x1 = bx1 - pad
+    padded_y1 = by1 - pad
+    padded_x2 = bx2 + pad
+    padded_y2 = by2 + pad
+
+    for hand in hands_data:
+        # 1. Direct landmark intersection check (fingertips, palm, knuckles)
+        landmarks = hand.get("landmarks_px", [])
+        for px, py in landmarks:
+            if padded_x1 <= px <= padded_x2 and padded_y1 <= py <= padded_y2:
+                return True
+
+        # 2. Palm proximity to perimeter of bounding box
+        palm = hand.get("palm_px")
+        if palm:
+            dx = max(0.0, bx1 - palm[0], palm[0] - bx2)
+            dy = max(0.0, by1 - palm[1], palm[1] - by2)
+            if math.hypot(dx, dy) <= max_dist:
+                return True
+
+        # 3. Hand bounding envelope overlap
+        if landmarks:
+            hx1 = min(p[0] for p in landmarks)
+            hx2 = max(p[0] for p in landmarks)
+            hy1 = min(p[1] for p in landmarks)
+            hy2 = max(p[1] for p in landmarks)
+            if max(bx1, hx1) < min(bx2, hx2) and max(by1, hy1) < min(by2, hy2):
+                return True
+
+    return False
+
+
 class TrackedObject:
     def __init__(self, track_id: int, class_name: str, box: tuple[float, float, float, float], conf: float):
         self.track_id = track_id
         self.class_name = class_name
-        self.class_history: list[str] = [class_name]
+        self.class_history: list[tuple[str, float]] = [(class_name, float(conf))]
         self.box = list(box)  # [x1, y1, x2, y2]
         self.confidence = conf
         self.hit_count = 1
@@ -45,18 +91,32 @@ class TrackedObject:
         self.is_hand_locked = False
         self.hand_offset = (0.0, 0.0)
 
-    def add_class_observation(self, cls_name: str) -> None:
-        """Sliding-window majority voting across recent detections."""
-        self.class_history.append(cls_name)
-        if len(self.class_history) > 8:
+    def add_class_observation(self, cls_name: str, conf: float = 0.5) -> None:
+        """
+        Confidence-weighted voting across recent detections.
+        Decisive instant transition when a new object arrives with strong confidence (>=0.65)
+        or 2 consecutive frames agree, while ignoring sporadic 1-frame noise.
+        """
+        self.class_history.append((cls_name, float(conf)))
+        if len(self.class_history) > 4:
             self.class_history.pop(0)
 
-        counts: dict[str, int] = {}
-        for c in self.class_history:
-            counts[c] = counts.get(c, 0) + 1
+        # Immediate switch on strong confident detection or 2 consecutive frames of new class
+        recent_matches = [c for c, _ in self.class_history[-2:] if c == cls_name]
+        if cls_name != self.class_name and (float(conf) >= 0.45 or len(recent_matches) >= 2):
+            self.class_name = cls_name
+            self.class_history = [(cls_name, float(conf))]
+            return
 
-        best_cls = max(counts, key=lambda c: (counts[c], 1 if c == self.class_name else 0))
-        self.class_name = best_cls
+        weights: dict[str, float] = {}
+        for c, w in self.class_history:
+            weights[c] = weights.get(c, 0.0) + w
+
+        current_weight = weights.get(self.class_name, 0.0)
+        best_cls, best_weight = max(weights.items(), key=lambda item: item[1])
+
+        if best_cls != self.class_name and best_weight > current_weight * 1.15:
+            self.class_name = best_cls
 
     @property
     def cx(self) -> float:
@@ -181,15 +241,22 @@ class SmoothBoxTracker:
                 d = deduped_raw[best_idx]
                 b = d["bbox"]
 
-                # Smooth coordinates
-                a = self.alpha_coord
+                # Adaptive coordinate smoothing (eliminates micro-jitter when holding still, tracks fast when moving)
+                shift = math.hypot(trk.cx - b["cx"], trk.cy - b["cy"])
+                if shift < 12.0:
+                    a = 0.35  # Butter-smooth when stationary in hand
+                elif shift > 40.0:
+                    a = 0.70  # Low-latency tracking during fast motions
+                else:
+                    a = 0.50
+
                 trk.box[0] = a * b["x1"] + (1 - a) * trk.box[0]
                 trk.box[1] = a * b["y1"] + (1 - a) * trk.box[1]
                 trk.box[2] = a * b["x2"] + (1 - a) * trk.box[2]
                 trk.box[3] = a * b["y2"] + (1 - a) * trk.box[3]
 
-                trk.confidence = 0.5 * trk.confidence + 0.5 * d["confidence"]
-                trk.add_class_observation(d["class_name"])
+                trk.confidence = 0.6 * trk.confidence + 0.4 * d["confidence"]
+                trk.add_class_observation(d["class_name"], d["confidence"])
                 trk.hit_count += 1
                 trk.missing_count = 0
 
@@ -226,14 +293,17 @@ class SmoothBoxTracker:
                 if trk.missing_count > self.max_missing_frames:
                     del self.tracks[tid]
 
-        # 5. Register new tracks (only up to max_tracks)
+        # 5. Register new tracks (only if in/on active hand)
         for i, det in enumerate(deduped_raw):
             if i not in matched_detections and len(self.tracks) < self.max_tracks:
                 b = det["bbox"]
+                box_coords = (b["x1"], b["y1"], b["x2"], b["y2"])
+                if not is_box_on_hand(box_coords, hands_data, max_dist=75.0):
+                    continue
                 new_trk = TrackedObject(
                     track_id=self.next_id,
                     class_name=det["class_name"],
-                    box=(b["x1"], b["y1"], b["x2"], b["y2"]),
+                    box=box_coords,
                     conf=det["confidence"],
                 )
                 self.tracks[self.next_id] = new_trk
@@ -259,9 +329,11 @@ class SmoothBoxTracker:
             if tid in self.tracks:
                 del self.tracks[tid]
 
-        # Return only confirmed tracks that have appeared in at least min_hits_to_show frames
+        # Return only confirmed tracks that are on/near an active hand
         output = []
-        for trk in self.tracks.values():
+        for trk in list(self.tracks.values()):
+            if not is_box_on_hand(trk.box, hands_data, max_dist=75.0):
+                continue
             if trk.hit_count >= self.min_hits_to_show or trk.is_hand_locked:
                 output.append(trk.to_dict())
 
@@ -269,22 +341,32 @@ class SmoothBoxTracker:
 
     def get_current_boxes(self, hands_data: Optional[list[dict[str, Any]]] = None) -> list[dict[str, Any]]:
         """
-        Fast 30 FPS query. Updates hand-locked container positions in real time
-        between YOLO re-detections without any detector delay.
+        Fast 30 FPS query. Strictly requires objects to be on/held by an active hand.
+        Eliminates any background boxes when hands are not holding/touching the object.
         """
+        if not hands_data:
+            return []
+
         palm_pos = None
         hand_grasping = False
-        if hands_data:
-            for h in hands_data:
-                if h.get("is_grasping", False):
-                    palm_pos = h.get("palm_px")
-                    hand_grasping = True
-                    break
-            if palm_pos is None and len(hands_data) > 0:
-                palm_pos = hands_data[0].get("palm_px")
+        for h in hands_data:
+            if h.get("is_grasping", False):
+                palm_pos = h.get("palm_px")
+                hand_grasping = True
+                break
+        if palm_pos is None and len(hands_data) > 0:
+            palm_pos = hands_data[0].get("palm_px")
 
         output = []
-        for trk in self.tracks.values():
+        for trk in list(self.tracks.values()):
+            # Strictly verify object is still touching or held by an active hand
+            if not is_box_on_hand(trk.box, hands_data, max_dist=75.0):
+                trk.missing_count += 3
+                if trk.missing_count > self.max_missing_frames:
+                    if trk.track_id in self.tracks:
+                        del self.tracks[trk.track_id]
+                continue
+
             if trk.is_hand_locked and palm_pos and hand_grasping:
                 target_cx = palm_pos[0] + trk.hand_offset[0]
                 target_cy = palm_pos[1] + trk.hand_offset[1]
